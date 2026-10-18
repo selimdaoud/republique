@@ -1,0 +1,7 @@
+# Source audio brute : 188 Mo, au-delà de la limite de 100 Mo de GitHub.
+# C'est le flux d'origine dont sont extraits fond.mp3 et bruits/grenades/.
+original.mp3
+
+# macOS
+.DS_Store
+**/.DS_Store

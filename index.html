@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>République</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { width:100%; height:100%; background:#1a1d22; overflow:hidden; }
+  body { font-family:"Helvetica Neue", Arial, sans-serif; color:#e8e3da; }
+  #game { display:block; width:100%; height:100%; cursor:crosshair; }
+
+  #boot { position:fixed; inset:0; z-index:10; display:flex; align-items:center; justify-content:center;
+          background:radial-gradient(circle at 50% 40%, #2b2f38 0%, #14161b 72%); }
+  .panel { width:min(560px, 92vw); padding:34px 38px; background:rgba(12,14,18,0.72);
+           border:1px solid rgba(255,255,255,0.08); border-radius:4px; }
+  h1 { font-size:40px; letter-spacing:14px; font-weight:800; margin-bottom:4px; }
+  .sub { font-size:11px; letter-spacing:3px; color:#9aa3b2; text-transform:uppercase; margin-bottom:26px; }
+  .row { margin-bottom:20px; }
+  .row label { display:flex; justify-content:space-between; font-size:11px; letter-spacing:2px;
+               text-transform:uppercase; color:#9aa3b2; margin-bottom:8px; }
+  .row label b { color:#ffcf4a; font-size:14px; letter-spacing:0; }
+  input[type=range] { width:100%; accent-color:#e04a3a; }
+  .seg { display:flex; gap:8px; }
+  .seg button { flex:1; padding:9px 0; font-size:11px; letter-spacing:2px; background:rgba(255,255,255,0.06);
+                color:#cfd6e2; border:1px solid rgba(255,255,255,0.1); border-radius:3px; cursor:pointer; }
+  .seg button.on { background:#e04a3a; color:#fff; border-color:#e04a3a; }
+  .keys { display:grid; grid-template-columns:auto 1fr; gap:5px 16px; font-size:12px;
+          color:#aab2c0; margin:22px 0 24px; }
+  .keys b { color:#fff; font-weight:600; }
+  #startBtn { width:100%; padding:14px; font-size:13px; letter-spacing:5px; font-weight:700;
+              background:#ffcf4a; color:#14161b; border:0; border-radius:3px; cursor:pointer; }
+  #startBtn:hover { background:#fff; }
+  .note { margin-top:14px; font-size:10px; color:#6f7787; line-height:1.5; }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+
+<div id="boot">
+  <div class="panel">
+    <h1>RÉPUBLIQUE</h1>
+    <div class="sub">Place de la République &middot; Paris &middot; 18 h 40</div>
+
+    <div class="row">
+      <label>Manifestants au départ <b id="nbVal">180</b></label>
+      <input id="nb" type="range" min="40" max="600" step="10" value="180">
+    </div>
+
+    <div class="row">
+      <label>Pression policière <b id="crsVal">&nbsp;</b></label>
+      <div class="seg" id="crs">
+        <button data-v="0.111">Modérée · 1 / 9</button>
+        <button data-v="0.167" class="on">Tendue · 1 / 6</button>
+        <button data-v="0.25">Nasse · 1 / 4</button>
+      </div>
+    </div>
+
+    <div class="keys">
+      <b>Clic gauche</b><span>Pose une cible (2 maximum) ou déplace la plus proche — maintenir pour la traîner</span>
+      <b>Maj + clic</b><span>Force une nouvelle cible : 25 % du cortège, les plus proches, s'en détachent</span>
+      <b>X</b><span>Supprime la cible active, son groupe rejoint la plus proche</span>
+      <b>Espace</b><span>Poussée — la foule charge la ligne de CRS</span>
+      <b>R</b><span>Repli — reculer et refaire monter la détermination</span>
+      <b>F</b><span>Fumigène — abrite la foule et gêne les tirs de lacrymo</span>
+      <b>Molette</b><span>Zoom &middot; <b>Clic droit</b> déplacer la caméra</span>
+      <b>M</b><span>Couper le son d'ambiance</span>
+      <b>Échap</b><span>Pause</span>
+    </div>
+
+    <button id="startBtn">COMMENCER LA MANIFESTATION</button>
+    <div class="note">Objectif : libérer les débouchés que tiennent les compagnies.
+      Poussez leur ligne 25 m en arrière pour la faire décrocher, puis tenez la rue
+      pour y faire entrer les renforts. En face : lacrymogènes, charges,
+      interpellations, canon à eau — et des compagnies qui se reforment.</div>
+  </div>
+</div>
+
+<script src="js/util.js"></script>
+<script src="js/sound.js"></script>
+<script src="js/map.js"></script>
+<script src="js/crowd.js"></script>
+<script src="js/police.js"></script>
+<script src="js/fx.js"></script>
+<script src="js/hud.js"></script>
+<script src="js/game.js"></script>
+</body>
+</html>
