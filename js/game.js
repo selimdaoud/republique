@@ -11,9 +11,10 @@ class Game {
     this.hud = new Hud();
     this.sound = new Ambience(AMBIENCE_SOURCES);
     this.sfx = new Sfx(this, GRENADE_SOURCES);
-    this.bins = new Bins(WORLD_W, WORLD_H, 4);      // manifestants
+    this.bins = new Bins(WORLD_W, WORLD_H, 2);      // manifestants
     this.crsBins = new Bins(WORLD_W, WORLD_H, 8);   // forces de l'ordre
-    this.civBins = new Bins(WORLD_W, WORLD_H, 5);   // badauds
+    this.civBins = new Bins(WORLD_W, WORLD_H, 3);   // badauds
+    this.scratchA = []; this.scratchB = []; this.scratchC = [];
     this.cam = { x: this.map.centre[0], y: this.map.centre[1], zoom: 3.4, ox: 0, oy: 0 };
     this.view = { x0: 0, y0: 0, x1: 0, y1: 0 };
     this.messages = [];
@@ -43,8 +44,9 @@ class Game {
     /* garde-fou : sans ratio valide on déploierait zéro compagnie en silence */
     const ratio = isFinite(opts.ratio) && opts.ratio > 0 ? opts.ratio : 0.167;
     const nb = isFinite(opts.protesters) && opts.protesters > 0 ? opts.protesters : 180;
-    const total = clamp(Math.round(nb * ratio), 8, 112);
-    const companies = clamp(Math.round(total / 11), 2, 6);
+    const total = clamp(Math.round(nb * ratio), 8, 460);
+    /* jusqu'à dix débouchés tenus quand la foule est énorme */
+    const companies = clamp(Math.round(total / 11), 2, 10);
     const per = Math.max(4, Math.round(total / companies));
     return { total: companies * per, companies, per };
   }
@@ -68,6 +70,9 @@ class Game {
     for (const p of this.crowd.list) p.group = 0;
     this.order = 'march';
     this.flares = 3;
+    this.truck = null;
+    this.truckCd = rr(55, 95);      // délai avant la première intervention
+    this.relightCd = 0;
     /* every street a company holds is a control point to free */
     this.mouths = this.police.squads.map((sq) => ({
       street: sq.street, x: sq.hold[0], y: sq.hold[1], axis: sq.axis,
@@ -81,6 +86,9 @@ class Game {
     this.stats = { morale: 70, cx: this.rally[0], cy: this.rally[1], fleeing: 0 };
     this.control = 0.5;
     this.controlT = 0;
+    this.density = 0;          // densité ressentie, personnes/m²
+    this.densityPeak = 0;
+    this.densityT = 0;
     this.lowMoraleT = 0;
     this.cam.x = this.map.centre[0]; this.cam.y = this.map.centre[1];
     this.cam.ox = 0; this.cam.oy = 0;
@@ -102,6 +110,42 @@ class Game {
     if (this.messages.length && this.messages[this.messages.length - 1].text === text) return;
     this.messages.push({ text, life: life || 3.5, t: 0 });
     if (this.messages.length > 3) this.messages.splice(0, this.messages.length - 3);
+  }
+
+  /* les pompiers viennent noyer un foyer de temps en temps ; un autre
+     repart ailleurs peu après */
+  fireBrigade(dt) {
+    if (this.truck) {
+      this.truck.update(dt, this);
+      if (this.truck.gone) {
+        this.truck = null;
+        this.truckCd = rr(70, 130);
+        this.relightCd = rr(12, 35);
+      }
+      return;
+    }
+    if (this.relightCd > 0) {
+      this.relightCd -= dt;
+      if (this.relightCd <= 0 && this.map.fires.length < 9) {
+        const f = this.map.addFire();
+        if (f) this.say('Un nouveau foyer s\'allume sur la place.', 3);
+      }
+    }
+    this.truckCd -= dt;
+    if (this.truckCd > 0 || !this.map.fires.length) return;
+
+    /* on vient éteindre le plus gros, par une rue encore praticable */
+    let fire = this.map.fires[0];
+    for (const f of this.map.fires) if (f.r > fire.r) fire = f;
+    let street = null, bd = Infinity;
+    for (const st of this.map.streets) {
+      if (st.w < 22) continue;
+      const d = dist2(st.mouth[0], st.mouth[1], fire.x, fire.y);
+      if (d < bd) { bd = d; street = st; }
+    }
+    if (!street) return;
+    this.truck = new FireTruck(street, fire, this.map);
+    this.say('Les pompiers remontent ' + street.name + ' vers un foyer.', 4);
   }
 
   /* une nouvelle cible aspire le quart du cortège le plus proche d'elle */
@@ -138,6 +182,20 @@ class Game {
     }
     this.activeRally = clamp(this.activeRally, 0, this.rallies.length - 1);
     this.rally = this.rallies[this.activeRally];
+  }
+
+  /* personne ne reste planté devant le camion */
+  truckRepulse(x, y, out) {
+    out[0] = 0; out[1] = 0;
+    const t = this.truck;
+    if (!t) return 0;
+    const dx = x - t.x, dy = y - t.y;
+    const d2 = dx * dx + dy * dy;
+    const rad = 7;
+    if (d2 > rad * rad) return 0;
+    const d = Math.sqrt(d2) || 0.001;
+    out[0] = dx / d; out[1] = dy / d;
+    return 1 - d / rad;
   }
 
   /* centre de gravité de chaque groupe, pour la régulation d'allure */
@@ -296,6 +354,7 @@ class Game {
       if (this.order === 'push' && p.state !== 'flee' && p.state !== 'grabbed') p.state = 'push';
       else if (p.state === 'push') p.state = 'march';
     }
+    this.fireBrigade(dt);
     this.groups = this.groupStats();
     this.crowd.update(dt);
     this.bystanders.update(dt);
@@ -307,6 +366,8 @@ class Game {
     this.stats = this.crowd.stats();
     this.controlT -= dt;
     if (this.controlT <= 0) { this.controlT = 0.5; this.control = this.sampleControl(); }
+    this.densityT -= dt;
+    if (this.densityT <= 0) { this.densityT = 0.3; this.measureDensity(); }
 
     /* ---- control points ---- */
     this.updateMouths(dt);
@@ -451,15 +512,28 @@ class Game {
       }
     };
 
+    const A = this.scratchA, B2 = this.scratchC, C = this.scratchD || (this.scratchD = []);
+    /* même découpage que la foule : la moitié des corps par image quand le
+       cortège est massif, les chevauchements se résorbent une image plus tard */
+    this.meleeTick = (this.meleeTick || 0) + 1;
+    const split = this.crowd.list.length > 1200;
+    const half = this.meleeTick & 1;
     for (const a of this.crowd.list) {
       if (a.state === 'grabbed') continue;
-      this.bins.near(a.x, a.y, 1.6, (b) => { if (b.id > a.id && b.state !== 'grabbed') resolve(a, b); });
-      this.crsBins.near(a.x, a.y, 1.8, (u) => resolve(a, u));
-      this.civBins.near(a.x, a.y, 1.6, (c) => resolve(a, c));
+      if (split && (a.id & 1) !== half) continue;
+      this.bins.nearInto(a.x, a.y, 1.4, A, 40);
+      for (let i = 0; i < A.length; i++) {
+        const b = A[i];
+        if (b.id > a.id && b.state !== 'grabbed') resolve(a, b);
+      }
+      this.crsBins.nearInto(a.x, a.y, 1.8, B2, 8);
+      for (let i = 0; i < B2.length; i++) resolve(a, B2[i]);
+      this.civBins.nearInto(a.x, a.y, 1.6, C, 6);
+      for (let i = 0; i < C.length; i++) resolve(a, C[i]);
       if (!map.walkable(a.x, a.y)) { map.wallPush(a.x, a.y, tmp); a.x += tmp[0] * 0.8; a.y += tmp[1] * 0.8; }
     }
     for (const c of this.bystanders.list) {
-      this.civBins.near(c.x, c.y, 1.5, (o) => { if (o.id > c.id) resolve(c, o); });
+      this.civBins.near(c.x, c.y, 1.5, (o) => { if (o.id > c.id) resolve(c, o); }, 8);
       this.crsBins.near(c.x, c.y, 1.8, (u) => resolve(c, u));
       if (!map.walkable(c.x, c.y)) { map.wallPush(c.x, c.y, tmp); c.x += tmp[0] * 0.8; c.y += tmp[1] * 0.8; }
     }
@@ -467,6 +541,82 @@ class Game {
       this.crsBins.near(u.x, u.y, 1.8, (o) => { if (o.id > u.id) resolve(u, o); });
       if (!map.walkable(u.x, u.y)) { map.wallPush(u.x, u.y, tmp); u.x += tmp[0] * 0.8; u.y += tmp[1] * 0.8; }
     });
+
+    /* deux passes : une seule ne dissipe pas les écrasements de charge */
+    this.relieve(map);
+    this.relieve(map);
+  }
+
+  /* Détassement. Une foule réelle plafonne autour de cinq personnes au mètre
+     carré ; la résolution par paires n'y suffit pas quand des dizaines de corps
+     se superposent au même endroit (le balayage par cellules en rate la plupart).
+     On relâche donc cellule par cellule : coût constant par agent, sans biais. */
+  relieve(map) {
+    const bins = this.bins;
+    /* on vise MAX_DENSITY mesurée sur un disque d'un mètre : au niveau d'une
+       cellule de 2 m il faut viser plus bas, le tassement n'est pas uniforme */
+    const cap = Math.round(MAX_DENSITY * 0.5 * bins.cell * bins.cell);
+    const used = bins.used;
+    for (let u = 0; u < used.length; u++) {
+      const bin = bins.bins[used[u]];
+      const n = bin.length;
+      if (n <= cap) continue;
+      let cx = 0, cy = 0;
+      for (let i = 0; i < n; i++) { cx += bin[i].x; cy += bin[i].y; }
+      cx /= n; cy /= n;
+      const force = clamp((n - cap) / cap, 0.08, 4) * bins.cell * 0.26;
+      for (let i = 0; i < n; i++) {
+        const a = bin[i];
+        if (a.state === 'grabbed') continue;
+        let dx = a.x - cx, dy = a.y - cy;
+        let d = Math.hypot(dx, dy);
+        if (d < 0.05) {                     // exactement au centre : on éparpille
+          const th = (a.id % 628) / 100;
+          dx = Math.cos(th); dy = Math.sin(th); d = 1;
+        }
+        const nx = a.x + dx / d * force, ny = a.y + dy / d * force;
+        if (map.walkable(nx, ny)) { a.x = nx; a.y = ny; }
+      }
+    }
+  }
+
+  /* Densité de la foule. On lit les cellules déjà remplies (gratuit), pondérées
+     par leur population : c'est la densité *vécue* par le manifestant moyen,
+     pas la moyenne géographique. Le pic est ensuite mesuré pour de bon sur un
+     disque d'un mètre autour de la cellule la plus chargée. */
+  measureDensity() {
+    const bins = this.bins;
+    const area = bins.cell * bins.cell;
+    let pop = 0, sum = 0;
+    for (let u = 0; u < bins.used.length; u++) {
+      const bin = bins.bins[bins.used[u]];
+      const n = bin.length;
+      if (!n) continue;
+      pop += n;
+      sum += n * (n / area);
+    }
+    this.density = pop ? sum / pop : 0;
+
+    /* Le pic se mesure autour de personnes réelles, pas autour du barycentre
+       d'une cellule : ce barycentre peut tomber dans un trou et donner zéro. */
+    let peak = 0;
+    const list = this.crowd.list;
+    const R = 0.8, DISC = Math.PI * R * R;
+    const sample = Math.max(1, Math.ceil(list.length / 60));
+    const buf = this.scratchA;
+    for (let i = 0; i < list.length; i += sample) {
+      const p = list[i];
+      bins.nearInto(p.x, p.y, R, buf, 60);
+      let n = 0;
+      for (let k = 0; k < buf.length; k++) {
+        if (dist2(buf[k].x, buf[k].y, p.x, p.y) < R * R) n++;
+      }
+      const d = n / DISC;              // le sujet est déjà compté dans le tampon
+      if (d > peak) peak = d;
+    }
+
+    /* le pic redescend doucement pour rester lisible */
+    this.densityPeak = Math.max(peak, this.densityPeak - 0.3);
   }
 
   /* who holds the ground: sample the esplanade and ask who is nearest */
@@ -522,6 +672,8 @@ class Game {
     this.fx.drawGround(ctx);
     this.map.drawProps(ctx, v);
     this.map.drawTrees(ctx, v);
+    this.map.drawFires(ctx, v, this.time);
+    if (this.truck) this.truck.draw(ctx, z);
     if (z > 3.2) this.streetLabels(ctx, z);
     this.drawObjectives(ctx, z);
     this.rallyMark(ctx, z);
@@ -529,6 +681,7 @@ class Game {
     this.police.draw(ctx, z);
     this.crowd.draw(ctx, z);
     this.fx.drawAir(ctx, z);
+    this.map.drawFireSmoke(ctx, v, this.time, this.fx.wind);
 
     ctx.restore();
 

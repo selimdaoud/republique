@@ -23,6 +23,9 @@ let AGENT_ID = 0;
 
 /* nombre de cibles que le joueur peut tenir en même temps */
 const MAX_TARGETS = 2;
+
+/* densité maximale d'une foule, en personnes au mètre carré */
+const MAX_DENSITY = 3;
 const rr = (a, b) => a + RNG() * (b - a);
 const ri = (a, b) => Math.floor(a + RNG() * (b - a + 1));
 const pick = (a) => a[Math.floor(RNG() * a.length)];
@@ -70,26 +73,63 @@ class Bins {
     this.rows = Math.ceil(h / cell) + 1;
     this.bins = new Array(this.cols * this.rows);
     for (let i = 0; i < this.bins.length; i++) this.bins[i] = [];
+    this.used = [];        // cellules réellement remplies : on ne vide que celles-là
   }
-  clear() { for (let i = 0; i < this.bins.length; i++) this.bins[i].length = 0; }
+  /* vider la grille entière coûte autant que la remplir quand les mailles
+     sont fines (plus de 170 000 cellules) : on ne touche qu'aux cases servies */
+  clear() {
+    const u = this.used;
+    for (let i = 0; i < u.length; i++) this.bins[u[i]].length = 0;
+    u.length = 0;
+  }
   add(a) {
     const cx = Math.floor(a.x / this.cell), cy = Math.floor(a.y / this.cell);
     if (cx < 0 || cy < 0 || cx >= this.cols || cy >= this.rows) return;
-    this.bins[cy * this.cols + cx].push(a);
+    const i = cy * this.cols + cx;
+    const bin = this.bins[i];
+    if (!bin.length) this.used.push(i);
+    bin.push(a);
   }
-  /* visits every agent in the cells covering the disc; fn(agent) */
-  near(x, y, r, fn) {
+  /* visits every agent in the cells covering the disc; fn(agent).
+     `limit` borne le nombre de voisins examinés : indispensable quand la
+     foule devient très dense, sinon le coût explose en O(densité). */
+  near(x, y, r, fn, limit) {
     const c = this.cell;
     const x0 = Math.max(0, Math.floor((x - r) / c)), x1 = Math.min(this.cols - 1, Math.floor((x + r) / c));
     const y0 = Math.max(0, Math.floor((y - r) / c)), y1 = Math.min(this.rows - 1, Math.floor((y + r) / c));
+    let seen = 0;
     for (let cy = y0; cy <= y1; cy++) {
       const row = cy * this.cols;
       for (let cx = x0; cx <= x1; cx++) {
         const bin = this.bins[row + cx];
-        for (let i = 0; i < bin.length; i++) fn(bin[i]);
+        for (let i = 0; i < bin.length; i++) {
+          fn(bin[i]);
+          if (limit && ++seen >= limit) return;
+        }
       }
     }
   }
+  /* même balayage, mais sans fermeture : on remplit un tampon réutilisé.
+     À 8 000 agents, éviter 20 000 allocations par image compte. */
+  nearInto(x, y, r, out, limit) {
+    out.length = 0;
+    const c = this.cell;
+    const x0 = Math.max(0, Math.floor((x - r) / c)), x1 = Math.min(this.cols - 1, Math.floor((x + r) / c));
+    const y0 = Math.max(0, Math.floor((y - r) / c)), y1 = Math.min(this.rows - 1, Math.floor((y + r) / c));
+    const cap = limit || 1e9;
+    for (let cy = y0; cy <= y1; cy++) {
+      const row = cy * this.cols;
+      for (let cx = x0; cx <= x1; cx++) {
+        const bin = this.bins[row + cx];
+        for (let i = 0; i < bin.length; i++) {
+          out.push(bin[i]);
+          if (out.length >= cap) return out;
+        }
+      }
+    }
+    return out;
+  }
+
   count(x, y, r) { let n = 0; const r2 = r * r; this.near(x, y, r, (a) => { if (dist2(a.x, a.y, x, y) < r2) n++; }); return n; }
 }
 

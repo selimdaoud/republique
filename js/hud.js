@@ -46,8 +46,10 @@ class Hud {
   }
 
   objective(ctx, w, h, g) {
-    const bw = 430, x = w / 2 - bw / 2;
-    this.panel(ctx, x, 18, bw, 92);
+    const many = g.mouths.length > 6;        // jusqu'à dix débouchés : on compacte
+    const bw = many ? Math.min(620, w - 580) : 430;
+    const x = w / 2 - bw / 2;
+    this.panel(ctx, x, 18, bw, many ? 78 : 92);
     ctx.textAlign = 'left';
     ctx.font = '700 9px "Helvetica Neue", Arial, sans-serif';
     ctx.fillStyle = 'rgba(170,185,210,0.75)';
@@ -73,23 +75,32 @@ class Hud {
       ctx.font = '600 8px "Helvetica Neue", Arial, sans-serif';
       ctx.fillStyle = m.freed ? 'rgba(90,208,138,0.95)' : 'rgba(190,200,220,0.7)';
       ctx.textAlign = 'left';
-      const name = m.street.replace('Rue du ', '').replace('Av. de la ', '').replace('Bd ', '');
-      ctx.fillText(name.slice(0, 13), px, 60);
-      if (!m.freed && m.open && m.crowdHere !== undefined) {
-        ctx.fillStyle = 'rgba(255,207,74,0.85)';
-        ctx.fillText(m.crowdHere >= m.need
-          ? 'capture ' + Math.round(m.progress * 100) + ' %'
-          : 'il faut ' + m.need + ' manifestants', px, 72);
+      if (many) {
+        /* trop de rues pour les nommer : un numéro, et l'avancement s'il y en a */
+        ctx.fillText(String(i + 1), px, 60);
+        if (!m.freed && m.open && m.progress > 0.02) {
+          ctx.fillStyle = 'rgba(255,207,74,0.85)';
+          ctx.fillText(Math.round(m.progress * 100) + ' %', px + 8, 60);
+        }
+      } else {
+        const name = m.street.replace('Rue du ', '').replace('Av. de la ', '').replace('Bd ', '');
+        ctx.fillText(name.slice(0, 13), px, 60);
+        if (!m.freed && m.open && m.crowdHere !== undefined) {
+          ctx.fillStyle = 'rgba(255,207,74,0.85)';
+          ctx.fillText(m.crowdHere >= m.need
+            ? 'capture ' + Math.round(m.progress * 100) + ' %'
+            : 'il faut ' + m.need + ' manifestants', px, 72);
+        }
       }
     });
 
     /* what the prefecture is doing right now */
     ctx.fillStyle = 'rgba(255,255,255,0.06)';
-    ctx.fillRect(x + 14, 78, bw - 28, 1);
+    ctx.fillRect(x + 14, many ? 66 : 78, bw - 28, 1);
     ctx.textAlign = 'center';
     ctx.font = '400 10px "Helvetica Neue", Arial, sans-serif';
     ctx.fillStyle = g.police.phase === 'AVANCER' ? 'rgba(220,180,150,0.9)' : 'rgba(240,140,110,0.95)';
-    ctx.fillText(PHASES[g.police.phase] || '', w / 2, 97);
+    ctx.fillText(PHASES[g.police.phase] || '', w / 2, many ? 80 : 97);
   }
 
   /* the water cannon gets its own marker so it is never a surprise */
@@ -128,7 +139,8 @@ class Hud {
     for (const sq of g.police.squads) {
       const sx = (sq.anchor[0] - g.cam.x) * z + w / 2;
       const sy = (sq.anchor[1] - g.cam.y) * z + h / 2;
-      const off = sx < pad || sx > w - pad || sy < pad + 86 || sy > h - pad - 95;
+      const top = g.mouths.length > 6 ? pad + 74 : pad + 86;
+      const off = sx < pad || sx > w - pad || sy < top || sy > h - pad - 95;
       const col = sq.counted ? 'rgba(150,160,175,0.75)' : (sq.state === 'rout' ? '#ffcf4a' : '#5aa0ff');
       ctx.save();
       if (off) {
@@ -138,7 +150,7 @@ class Hud {
         dx /= len; dy /= len;
         /* push the marker onto the edge of the safe area */
         const mx = clamp(cx + dx * 10000, pad, w - pad);
-        const my = clamp(cy + dy * 10000, pad + 86, h - pad - 95);
+        const my = clamp(cy + dy * 10000, top, h - pad - 95);
         const k = Math.min((mx - cx) / (dx * 10000 || 1e-6), (my - cy) / (dy * 10000 || 1e-6));
         const px = cx + dx * 10000 * k, py = cy + dy * 10000 * k;
         const a = Math.atan2(dy, dx);
@@ -203,7 +215,7 @@ class Hud {
 
   crowdPanel(ctx, w, h, g) {
     const s = g.stats;
-    this.panel(ctx, 18, 18, 250, 124);
+    this.panel(ctx, 18, 18, 250, 142);
     ctx.textAlign = 'left';
     ctx.font = '700 9px "Helvetica Neue", Arial, sans-serif';
     ctx.fillStyle = 'rgba(170,185,210,0.75)';
@@ -227,6 +239,24 @@ class Hud {
     ctx.fillText('Interpellés ' + g.crowd.arrested + '   ·   Dispersés ' + g.crowd.dispersed, 32, 114);
     ctx.fillStyle = 'rgba(190,185,175,0.6)';
     ctx.fillText('Badauds ' + g.bystanders.count + (g.bystanders.gone ? '   ·   enfuis ' + g.bystanders.gone : ''), 32, 128);
+
+    /* densité de la foule : ce que vit le manifestant moyen, et le point le
+       plus comprimé du cortège */
+    const d = g.density || 0, pk = g.densityPeak || 0;
+    ctx.font = '700 8px "Helvetica Neue", Arial, sans-serif';
+    ctx.fillStyle = 'rgba(170,185,210,0.75)';
+    spaced(ctx, 'DENSITÉ', 32, 144, 1.6, 'left');
+    /* seuils relatifs au plafond, sinon la jauge reste jaune dès qu'on le baisse */
+    const col = (v) => (v < MAX_DENSITY * 0.5 ? '#5ad08a' : v < MAX_DENSITY * 0.8 ? '#ffcf4a' : '#e04a3a');
+    ctx.font = '600 10px "Helvetica Neue", Arial, sans-serif';
+    ctx.fillStyle = col(d);
+    ctx.fillText(d.toFixed(1).replace('.', ',') + ' /m²', 82, 144);
+    ctx.fillStyle = 'rgba(170,185,210,0.55)';
+    ctx.fillText('pic', 136, 144);
+    ctx.fillStyle = col(pk);
+    ctx.fillText(pk.toFixed(1).replace('.', ',') + ' /m²', 155, 144);
+    /* jauge sur l'échelle 0 → MAX_DENSITY */
+    this.bar(ctx, 32, 149, 200, 3, d / MAX_DENSITY, col(d));
   }
 
   policePanel(ctx, w, h, g) {

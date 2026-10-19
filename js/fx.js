@@ -249,3 +249,223 @@ class Fx {
     }
   }
 }
+
+/* ------------------------------------------------------------------ *
+ *  Camion de pompiers : remonte une rue, noie un foyer, repart.
+ *  Un nouveau feu se rallume ailleurs un peu plus tard.
+ * ------------------------------------------------------------------ */
+
+class FireTruck {
+  constructor(street, fire, map) {
+    this.id = ++AGENT_ID;
+    this.street = street;
+    this.fire = fire;
+    this.team = 'fire';
+    this.vehicle = true;
+    this.r = 2.6;
+    this.state = 'drive';          // drive | spray | leave
+    this.spray = 0;
+    this.beacon = RNG() * TAU;
+    this.gone = false;
+    this.doneAt = 0;
+    const L = Math.hypot(street.ex - street.sx, street.ey - street.sy) || 1;
+    this.dir = [(street.ex - street.sx) / L, (street.ey - street.sy) / L];
+    this.x = lerp(street.sx, street.ex, 0.7);
+    this.y = lerp(street.sy, street.ey, 0.7);
+    this.map = map;
+    this.speed = 0;
+    this.path = this.route(map, [this.x, this.y], [fire.x, fire.y], true);
+    this.pathI = 1;
+    const n = this.path[1] || this.path[0];
+    this.ang = Math.atan2(n[1] - this.y, n[0] - this.x);
+  }
+
+  /* itinéraire : l'axe de la rue jusqu'au débouché, puis une courbe de Bézier
+     vers le foyer dont le point de contrôle penche vers le centre de la place.
+     `inbound` false construit le trajet retour. */
+  route(map, from, to, inbound) {
+    const m = this.street.mouth;
+    const pts = [];
+    const bez = (a, c, b, steps) => {
+      for (let i = 1; i <= steps; i++) {
+        const t = i / steps, u = 1 - t;
+        pts.push(this.legal(map, [
+          u * u * a[0] + 2 * u * t * c[0] + t * t * b[0],
+          u * u * a[1] + 2 * u * t * c[1] + t * t * b[1],
+        ]));
+      }
+    };
+    const control = (a, b) => {
+      const mid = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+      /* d'autant plus infléchi vers le centre que le trajet est long */
+      const far = clamp(Math.hypot(b[0] - a[0], b[1] - a[1]) / 160, 0.25, 0.75);
+      return [lerp(mid[0], map.centre[0], far), lerp(mid[1], map.centre[1], far)];
+    };
+
+    pts.push(from.slice());
+    if (inbound) {
+      /* on descend la rue dans son axe */
+      for (let i = 1; i <= 4; i++) {
+        pts.push(this.legal(map, [lerp(from[0], m[0], i / 4), lerp(from[1], m[1], i / 4)]));
+      }
+      bez(m, control(m, to), to, 14);
+    } else {
+      bez(from, control(from, m), m, 12);
+      const out = [lerp(this.street.sx, this.street.ex, 0.95), lerp(this.street.sy, this.street.ey, 0.95)];
+      for (let i = 1; i <= 5; i++) {
+        pts.push(this.legal(map, [lerp(m[0], out[0], i / 5), lerp(m[1], out[1], i / 5)]));
+      }
+    }
+    return pts;
+  }
+
+  /* un point d'itinéraire doit être praticable : sinon on le ramène vers le centre */
+  legal(map, p) {
+    if (map.walkable(p[0], p[1])) return p;
+    for (let k = 1; k <= 6; k++) {
+      const t = k / 7;
+      const q = [lerp(p[0], map.centre[0], t), lerp(p[1], map.centre[1], t)];
+      if (map.walkable(q[0], q[1])) return q;
+    }
+    return p;
+  }
+
+  /* poursuite pure : on vise le point d'itinéraire courant, qui glisse en avant */
+  follow(dt, g, cruise) {
+    while (this.pathI < this.path.length - 1 &&
+      dist2(this.x, this.y, this.path[this.pathI][0], this.path[this.pathI][1]) < 11 * 11) this.pathI++;
+    const t = this.path[this.pathI];
+    this.drive(dt, g, Math.atan2(t[1] - this.y, t[0] - this.x), cruise);
+    return this.pathI >= this.path.length - 1;
+  }
+
+  /* direction souhaitée, lissée : on regarde le champ un peu en avant pour
+     éviter l'escalier des huit directions */
+  wish(g, field, fx, fy) {
+    const d = [0, 0];
+    let wx = 0, wy = 0, n = 0;
+    if (g.map.fieldDir(field, this.x, this.y, false, d)) { wx += d[0]; wy += d[1]; n++; }
+    const ax = this.x + Math.cos(this.ang) * 5, ay = this.y + Math.sin(this.ang) * 5;
+    if (g.map.walkable(ax, ay) && g.map.fieldDir(field, ax, ay, false, d)) { wx += d[0] * 0.8; wy += d[1] * 0.8; n++; }
+    if (!n) {
+      const dd = Math.hypot(fx - this.x, fy - this.y) || 1;
+      return Math.atan2((fy - this.y) / dd, (fx - this.x) / dd);
+    }
+    return Math.atan2(wy, wx);
+  }
+
+  /* conduite : on tourne le volant, puis on avance tout droit — un camion
+     ne se déplace pas en crabe */
+  drive(dt, g, want, cruise) {
+    const turn = angNorm(want - this.ang);
+    const rate = 2.4 + 1.2 * (1 - clamp(this.speed / 21, 0, 1));   // plus maniable au ralenti
+    this.ang += clamp(turn, -rate * dt, rate * dt);
+
+    const align = Math.cos(angNorm(want - this.ang));
+    const target = cruise * clamp(0.25 + align * 0.85, 0.2, 1);
+    this.speed = damp(this.speed || 0, target, 2.2, dt);
+
+    const step = this.speed * dt;
+    const tries = [0, 0.45, -0.45, 0.95, -0.95];
+    for (const off of tries) {
+      const a = this.ang + off;
+      const nx = this.x + Math.cos(a) * step, ny = this.y + Math.sin(a) * step;
+      if (g.map.walkable(nx, ny)) {
+        this.x = nx; this.y = ny;
+        if (off) this.ang += clamp(off, -rate * dt * 2, rate * dt * 2);
+        this.stuckT = 0;
+        return;
+      }
+    }
+    /* vraiment coincé : on ralentit et on se dégage */
+    this.speed *= 0.4;
+    this.stuckT = (this.stuckT || 0) + dt;
+    if (this.stuckT > 1.5) {
+      const back = this.ang + Math.PI;
+      const nx = this.x + Math.cos(back) * 1.2, ny = this.y + Math.sin(back) * 1.2;
+      if (g.map.walkable(nx, ny)) { this.x = nx; this.y = ny; }
+      this.ang += 0.9;
+      this.stuckT = 0;
+      this.blocked = (this.blocked || 0) + 1;
+      if (this.blocked > 6 && this.state !== 'leave') this.beginLeave(g);
+    }
+  }
+
+  /* on repart : itinéraire retour construit depuis la position courante */
+  beginLeave(g) {
+    if (this.state === 'leave') return;
+    this.state = 'leave';
+    this.path = this.route(g.map, [this.x, this.y], null, false);
+    this.pathI = 1;
+  }
+
+  update(dt, g) {
+    this.beacon += dt * 9;
+    const f = this.fire;
+    const alive = f && g.map.fires.indexOf(f) >= 0;
+    if (!alive) this.beginLeave(g);
+
+    if (this.state === 'leave') {
+      this.spray = damp(this.spray, 0, 4, dt);
+      this.follow(dt, g, 24);
+      if (g.map.distFromPlaza(this.x, this.y) > 110) this.gone = true;
+      return;
+    }
+
+    const dist = Math.hypot(f.x - this.x, f.y - this.y);
+    if (dist > 9) {
+      this.state = 'drive';
+      /* on ralentit à l'approche pour ne pas dépasser le foyer */
+      this.follow(dt, g, 21 * clamp(dist / 45, 0.26, 1));
+      this.spray = damp(this.spray, 0, 3, dt);
+    } else {
+      this.state = 'spray';
+      this.speed = damp(this.speed || 0, 0, 6, dt);
+      this.spray = damp(this.spray, 1, 3, dt);
+      /* à l'arrêt on oriente la lance sur le foyer */
+      const want = Math.atan2(f.y - this.y, f.x - this.x);
+      this.ang += angNorm(want - this.ang) * clamp(dt * 3, 0, 1);
+      if (this.spray > 0.5) {
+        f.dying = (f.dying || 0) + dt;
+        f.r = Math.max(0, f.r - dt * (0.32 + f.r0 * 0.12));
+        if (Math.random() < dt * 20) {
+          g.fx.burst(f.x + rr(-f.r, f.r), f.y + rr(-f.r, f.r), 2, [225, 228, 230], 7);
+        }
+        if (f.r < 0.3) {
+          g.map.removeFire(f);
+          g.say('Les pompiers ont noyé un foyer.', 3);
+          this.beginLeave(g);
+        }
+      }
+    }
+  }
+
+  draw(ctx, zoom) {
+    ctx.save();
+    ctx.translate(this.x, this.y);
+    ctx.rotate(this.ang);
+    /* lance à eau */
+    if (this.spray > 0.15) {
+      const g2 = ctx.createRadialGradient(0, 0, 1, 0, 0, 13);
+      g2.addColorStop(0, 'rgba(225,240,255,' + (0.55 * this.spray).toFixed(2) + ')');
+      g2.addColorStop(1, 'rgba(225,240,255,0)');
+      ctx.fillStyle = g2;
+      ctx.beginPath(); ctx.moveTo(0, 0); ctx.arc(0, 0, 13, -0.3, 0.3); ctx.closePath(); ctx.fill();
+    }
+    ctx.fillStyle = 'rgba(0,0,0,0.35)';
+    ctx.fillRect(-5, -2.4, 11.5, 5);
+    ctx.fillStyle = '#b4332a';
+    ctx.fillRect(-5.5, -2.7, 11.5, 5.4);
+    ctx.fillStyle = '#8f2822';
+    ctx.fillRect(-5.5, -2.7, 4.5, 5.4);
+    ctx.fillStyle = '#d8dde2';
+    ctx.fillRect(2.2, -2, 3.2, 4);
+    /* gyrophares */
+    const on = Math.sin(this.beacon) > 0;
+    ctx.fillStyle = on ? '#ff6a4a' : '#5c2420';
+    ctx.fillRect(-1.2, -3.2, 2.4, 0.9);
+    ctx.fillStyle = !on ? '#ffd0a0' : '#5c3a20';
+    ctx.fillRect(-1.2, 2.3, 2.4, 0.9);
+    ctx.restore();
+  }
+}

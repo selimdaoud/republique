@@ -125,6 +125,10 @@ class CRS {
     const wp = sq.tmp;
     const push = g.map.wallPush(this.x, this.y, wp);
     if (push) { dx += wp[0] * push * 2.5; dy += wp[1] * push * 2.5; }
+    const fire = g.map.fireRepulse(this.x, this.y, wp);
+    if (fire) { dx += wp[0] * fire * 3.5; dy += wp[1] * fire * 3.5; }
+    const truck = g.truckRepulse(this.x, this.y, wp);
+    if (truck) { dx += wp[0] * truck * 4; dy += wp[1] * truck * 4; }
 
     const l = Math.hypot(dx, dy);
     if (l > 0.001) { dx /= l; dy /= l; }
@@ -203,8 +207,10 @@ class Squad {
   }
 
   slotPos(i, size) {
-    const perRank = Math.ceil(size / 2);
-    const rank = i < perRank ? 0 : 1;
+    /* une compagnie large se met sur plus de rangs : une ligne de quarante
+       hommes ferait soixante mètres de front, plus large que la rue */
+    const perRank = Math.min(12, Math.ceil(size / 2));
+    const rank = Math.floor(i / perRank);
     const k = (i % perRank) - (perRank - 1) / 2;
     const nx = -Math.sin(this.ang), ny = Math.cos(this.ang);
     return [
@@ -267,18 +273,25 @@ class Squad {
 
     /* ---- how hard is the crowd leaning on this line? ---- */
     let pressure = 0, cx = 0, cy = 0, n = 0, nNear = 0, nRange = 0;
-    for (const p of g.crowd.list) {
+    /* à très grande foule on échantillonne : balayer 5 000 manifestants par
+       compagnie et par image coûte plus cher que tout le reste réuni */
+    const list = g.crowd.list;
+    const stride = list.length > 1200 ? 4 : 1;
+    const ca = Math.cos(this.ang), sa = Math.sin(this.ang);
+    for (let i = (this.id * 7) % stride; i < list.length; i += stride) {
+      const p = list[i];
       const dx = p.x - this.anchor[0], dy = p.y - this.anchor[1];
       const d = Math.hypot(dx, dy);
       if (d < 62) nRange++;
       if (d < 30) nNear++;
       if (d > 16) continue;
-      const front = (dx * Math.cos(this.ang) + dy * Math.sin(this.ang)) / (d || 1);
+      const front = (dx * ca + dy * sa) / (d || 1);
       if (front < -0.2) continue;                 // behind the shields
       const w = (1 - d / 16) * (0.35 + p.morale / 140) * (p.state === 'push' ? 2.1 : 1);
       pressure += w;
       cx += p.x; cy += p.y; n++;
     }
+    if (stride > 1) { pressure *= stride; nNear *= stride; nRange *= stride; }
     /* diminishing returns: only so many people reach the shields, the rest
        push on backs. Past the frontage the extra numbers count logarithmically */
     const cap = this.alive * 1.7 + 3;

@@ -8,7 +8,8 @@ const CLOTHES = ['#2f3a4d', '#4a4f58', '#7a3b36', '#2d5a4a', '#6b5a35', '#3f3a52
 const FLAGS = ['#c23b32', '#1f1f24', '#2f7a46', '#2f5fa8', '#d8a62a'];
 const SKIN = ['#d8b291', '#a87350', '#f0cfae', '#6f4a33', '#c89670'];
 
-const WALK = 2.25, RUN = 5.1;   // +50 % : la manif se joue au rythme de la rue
+const WALK = 2.25, RUN = 5.1;
+const SCRATCH = [];        // tampon de voisinage réutilisé   // +50 % : la manif se joue au rythme de la rue
 
 class Protester {
   constructor(x, y) {
@@ -74,15 +75,17 @@ class Protester {
 
     /* --- neighbours: separation + cohesion --- */
     let sx = 0, sy = 0, cx = 0, cy = 0, n = 0, close = 0;
-    g.bins.near(this.x, this.y, 4, (o) => {
-      if (o === this || o.team !== 'crowd') return;
+    const near = g.bins.nearInto(this.x, this.y, 2.6, SCRATCH, 14);
+    for (let k = 0; k < near.length; k++) {
+      const o = near[k];
+      if (o === this) continue;
       const dx = o.x - this.x, dy = o.y - this.y;
       const d2 = dx * dx + dy * dy;
-      if (d2 > 16 || d2 < 0.0001) return;
+      if (d2 > 6.8 || d2 < 0.0001) continue;
       const d = Math.sqrt(d2);
       if (d < 1.05) { sx -= dx / d * (1.05 - d); sy -= dy / d * (1.05 - d); close++; }
       cx += o.x; cy += o.y; n++;
-    });
+    }
     /* hard overlaps are solved in the melee pass, so this only needs to be a nudge */
     const sl = Math.hypot(sx, sy);
     if (sl > 1) { sx /= sl; sy /= sl; }
@@ -110,28 +113,30 @@ class Protester {
 
     /* --- the police line --- */
     let fear = 0;
-    g.crsBins.near(this.x, this.y, 14, (o) => {
-      if (o.state === 'hurt') return;          // out of the fight, not a threat
+    const cops = g.crsBins.nearInto(this.x, this.y, 14, g.scratchB, 16);
+    for (let k = 0; k < cops.length; k++) {
+      const o = cops[k];
+      if (o.state === 'hurt') continue;        // out of the fight, not a threat
       const dx = o.x - this.x, dy = o.y - this.y;
       const d = Math.hypot(dx, dy) || 1;
-      if (d > 14) return;
-      const near = 1 - d / 14;
+      if (d > 14) continue;
+      const w = 1 - d / 14;
       if (g.order === 'fallback') {
-        ax -= dx / d * near * 2.1; ay -= dy / d * near * 2.1;
+        ax -= dx / d * w * 2.1; ay -= dy / d * w * 2.1;
       } else if (this.state === 'push' && this.morale > 28) {
         /* surge: lean into the shields */
-        ax += dx / d * near * 1.5; ay += dy / d * near * 1.5;
+        ax += dx / d * w * 1.5; ay += dy / d * w * 1.5;
       } else if (this.morale < 32 || o.charging) {
-        ax -= dx / d * near * (1.4 + (o.charging ? 1.2 : 0));
-        ay -= dy / d * near * (1.4 + (o.charging ? 1.2 : 0));
+        ax -= dx / d * w * (1.4 + (o.charging ? 1.2 : 0));
+        ay -= dy / d * w * (1.4 + (o.charging ? 1.2 : 0));
       } else {
         /* hold the line at arm's length */
         const want = 2.6 + this.bold * 1.5;
-        const k = (d - want) * 0.22;
-        ax += dx / d * k; ay += dy / d * k;
+        const k2 = (d - want) * 0.22;
+        ax += dx / d * k2; ay += dy / d * k2;
       }
-      fear += near * (o.charging ? 2.2 : 1);
-    });
+      fear += w * (o.charging ? 2.2 : 1);
+    }
 
     /* --- gas and smoke --- */
     let gasHere = 0;
@@ -175,6 +180,12 @@ class Protester {
     /* --- walls --- */
     const push = map.wallPush(this.x, this.y, dir);
     if (push) { ax += dir[0] * push * 3; ay += dir[1] * push * 3; }
+
+    /* --- on contourne les foyers --- */
+    const fire = map.fireRepulse(this.x, this.y, dir);
+    if (fire) { ax += dir[0] * fire * 4; ay += dir[1] * fire * 4; }
+    const truck = g.truckRepulse(this.x, this.y, dir);
+    if (truck) { ax += dir[0] * truck * 4.5; ay += dir[1] * truck * 4.5; }
 
     /* --- jams: shuffle sideways when nothing is moving --- */
     const moving = Math.hypot(this.vx, this.vy);
@@ -333,9 +344,20 @@ class Crowd {
   update(dt) {
     const g = this.g;
     this.shock = Math.max(0, this.shock - dt * 6);
+    /* au-delà d'un gros millier, on met à jour une moitié du cortège par
+       image avec un pas doublé : indiscernable à l'œil, deux fois moins cher */
+    this.tick = (this.tick || 0) + 1;
+    const split = this.list.length > 1200;
+    const half = this.tick & 1;
+    const step = split ? dt * 2 : dt;
     for (let i = this.list.length - 1; i >= 0; i--) {
       const p = this.list[i];
-      p.update(dt, g);
+      if (split && (p.id & 1) !== half) {
+        /* on continue d'avancer sur sa lancée, sans rien recalculer */
+        p.x += p.vx * dt; p.y += p.vy * dt;
+        continue;
+      }
+      p.update(step, g);
       /* gone: dispersed down a side street, or taken away */
       if (p.state === 'flee' && g.map.distFromPlaza(p.x, p.y) > 150) {
         this.list.splice(i, 1); this.dispersed++;
@@ -404,15 +426,15 @@ class Onlooker {
     let ax = 0, ay = 0, danger = 0;
 
     /* --- les CRS : on s'écarte, et plus vite s'ils chargent --- */
-    g.crsBins.near(this.x, this.y, 26, (o) => {
+    g.crsBins.near(this.x, this.y, 20, (o) => {
       if (o.state === 'hurt') return;
       const dx = o.x - this.x, dy = o.y - this.y;
       const d = Math.hypot(dx, dy) || 1;
-      if (d > 26) return;
-      const k = (1 - d / 26) * (o.charging ? 2.6 : o.vehicle ? 2.2 : 1.3);
+      if (d > 20) return;
+      const k = (1 - d / 20) * (o.charging ? 2.6 : o.vehicle ? 2.2 : 1.3);
       ax -= dx / d * k * 2.2; ay -= dy / d * k * 2.2;
       danger = Math.max(danger, k);
-    });
+    }, 10);
 
     /* --- les gaz : on part franchement --- */
     for (const c of g.fx.clouds) {
@@ -433,13 +455,13 @@ class Onlooker {
     /* --- on s'écarte quand le cortège arrive : personne ne reste planté
            devant une manif qui avance --- */
     let px = 0, py = 0, pn = 0;
-    g.bins.near(this.x, this.y, 8, (p) => {
+    g.bins.near(this.x, this.y, 6, (p) => {
       const dx = p.x - this.x, dy = p.y - this.y;
       const d = Math.hypot(dx, dy) || 1;
-      if (d > 8) return;
-      const k = 1 - d / 8;
+      if (d > 6) return;
+      const k = 1 - d / 6;
       px -= dx / d * k; py -= dy / d * k; pn++;
-    });
+    }, 12);
     if (pn) {
       const l2 = Math.hypot(px, py) || 1;
       const urge = clamp(pn / 4, 0.8, 3.2);
@@ -448,12 +470,12 @@ class Onlooker {
     }
 
     /* --- séparation entre badauds --- */
-    g.civBins.near(this.x, this.y, 3, (o) => {
+    g.civBins.near(this.x, this.y, 2.4, (o) => {
       if (o === this) return;
       const dx = o.x - this.x, dy = o.y - this.y;
       const d = Math.hypot(dx, dy) || 1;
       if (d < 1.4) { ax -= dx / d * (1.4 - d) * 1.2; ay -= dy / d * (1.4 - d) * 1.2; }
-    });
+    }, 8);
 
     /* --- panique --- */
     this.panic = clamp(this.panic + (danger > 0.45 ? dt * 1.6 * danger : -dt * 0.45), 0, 1.6);
@@ -475,6 +497,10 @@ class Onlooker {
 
     const push = map.wallPush(this.x, this.y, tmp);
     if (push) { ax += tmp[0] * push * 3; ay += tmp[1] * push * 3; }
+    const fire = map.fireRepulse(this.x, this.y, tmp);
+    if (fire) { ax += tmp[0] * fire * 4.5; ay += tmp[1] * fire * 4.5; }
+    const truck = g.truckRepulse(this.x, this.y, tmp);
+    if (truck) { ax += tmp[0] * truck * 5; ay += tmp[1] * truck * 5; }
 
     const l = Math.hypot(ax, ay);
     if (l > 0.001) { ax /= l; ay /= l; }
@@ -526,9 +552,15 @@ class Bystanders {
 
   update(dt) {
     const g = this.g;
+    /* les badauds sont du décor vivant : une image sur deux suffit, avec un
+       pas de temps doublé. Invisible à l'œil, moitié moins cher. */
+    this.tick = (this.tick || 0) + 1;
+    const half = this.tick % 2;
+    const step = dt * 2;
     for (let i = this.list.length - 1; i >= 0; i--) {
       const o = this.list[i];
-      o.update(dt, g);
+      if ((o.id & 1) !== half) continue;
+      o.update(step, g);
       if (o.state === 'flee' && g.map.distFromPlaza(o.x, o.y) > 120) { this.list.splice(i, 1); this.gone++; }
     }
   }

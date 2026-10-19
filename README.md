@@ -18,7 +18,7 @@ python3 -m http.server 8766
 # http://127.0.0.1:8766/index.html
 ```
 
-L'écran d'accueil règle **le nombre de manifestants au départ** (40 à 600) et
+L'écran d'accueil règle **le nombre de manifestants au départ** (40 à 5000) et
 la **pression policière**, exprimée en ratio : modérée (1 CRS pour 9
 manifestants), tendue (1 pour 6) ou nasse (1 pour 4). L'effectif déployé est
 donc **proportionnel au cortège**, et l'écran affiche le calcul en direct
@@ -26,15 +26,40 @@ donc **proportionnel au cortège**, et l'écran affiche le calcul en direct
 
 | Cortège | Modérée | Tendue | Nasse |
 |---|---|---|---|
-| 40 | 8 CRS (2×4) | 8 (2×4) | 10 (2×5) |
-| 180 | 20 (2×10) | 30 (3×10) | 44 (4×11) |
-| 250 | 27 (3×9) | 44 (4×11) | 63 (6×11) |
-| 450 | 50 (5×10) | 78 (6×13) | 112 (6×19) |
-| 600 | 66 (6×11) | 100 (6×17) | 112 (6×19) |
+| 180 | 20 CRS (2×10) | 30 (3×10) | 44 (4×11) |
+| 600 | 66 (6×11) | 99 (9×11) | 150 (10×15) |
+| 1500 | 167 (10×17) | 250 (10×25) | 375 (10×38) |
+| 5000 | 460 (10×46) | 460 (10×46) | 460 (10×46) |
 
-L'effectif total est borné entre 8 et 112 hommes, répartis en 2 à 6 compagnies
-— c'est aussi le nombre de débouchés à libérer. Au maximum (600 manifestants,
-114 CRS) la simulation coûte 7,3 ms par image côté CPU.
+L'effectif total est borné entre 8 et 460 hommes, répartis en 2 à 10 compagnies
+— c'est aussi le nombre de débouchés à libérer. Une compagnie large se range
+sur plusieurs rangs (12 hommes de front au maximum) au lieu d'étirer une ligne
+plus large que la rue.
+
+### Densité et coût
+
+La foule est **plafonnée à 5 personnes au mètre carré** (`MAX_DENSITY`). La
+résolution par paires n'y suffit pas quand des dizaines de corps se superposent
+— le balayage par cellules en rate la plupart — donc une passe de détassement
+relâche chaque cellule surchargée, deux fois par image, en coût constant par
+agent. Mesuré : un empilement artificiel de 800 personnes sur 4 m² retombe à
+4 pers/m² en une seconde et 2,5 au bout de dix ; en partie réelle les pics de
+bousculade plafonnent à 6.
+
+| Manifestants | + badauds | + CRS | ms/image (CPU) |
+|---|---|---|---|
+| 180 | 90 | 30 | 2,6 |
+| 600 | 298 | 99 | 8,5 |
+| 1200 | 597 | 200 | 17,3 |
+| 2000 | 998 | 330 | 20,1 |
+| 3000 | 1490 | 460 | 32,2 |
+| 5000 | 2488 | 460 | 50,3 |
+
+Au-delà de 1200 manifestants, la foule et la mêlée sont mises à jour par
+moitiés alternées (pas de temps doublé), les badauds une image sur deux, et la
+pression sur chaque ligne est échantillonnée au quart. Le confort s'arrête
+autour de 2000 ; 5000 tourne mais à une vingtaine d'images par seconde côté
+calcul, avant même le rendu.
 
 ## Commandes
 
@@ -205,6 +230,33 @@ chaque manifestant mais use la détermination.
 compagnie** : une charge peut saisir plusieurs personnes, mais pas vider le
 cortège d'un coup. Sans ce plafond, six compagnies interpellaient 307
 manifestants sur 400 en douze minutes.
+
+**Des poubelles brûlent** sur l'esplanade — huit foyers dispersés, d'**un
+rayon de 0,75 à 3,4 m** (beaucoup de petits bacs, quelques gros brasiers :
+tirage en carré). Flammes à trois couches qui vacillent, halo chaud, cercle de
+cendres et panache de fumée qui dérive avec le vent au-dessus de la mêlée ;
+tout est à l'échelle du foyer. Manifestants, badauds et CRS les contournent.
+
+**Les pompiers passent** : toutes les 70 à 130 secondes, un camion remonte la
+rue la plus proche du **plus gros foyer**, se gare à 9 m, l'arrose jusqu'à
+l'extinction (3 à 5 s selon la taille), puis repart par où il est venu.
+Il **roule comme un véhicule** : il tourne le volant (1,9 à 3 rad/s selon
+l'allure) puis avance dans l'axe de sa caisse, jamais en crabe ; vitesse de
+croisière **21 m/s** (75 km/h), 24 m/s au retour, ralentissement progressif
+sous 45 m à l'approche du feu. Son cap vise la route, pas le foyer — il ne se tourne vers les flammes
+qu'une fois à l'arrêt, pour orienter la lance.
+
+Son **itinéraire est explicite**, pas un suivi de champ de navigation :
+l'**axe de la rue** jusqu'au débouché, puis une **courbe de Bézier quadratique**
+vers le foyer dont le point de contrôle penche vers le **centre de la place**
+(d'autant plus que le trajet est long). Chaque point de l'itinéraire est
+ramené en zone praticable s'il tombe dans un immeuble, et le camion le suit en
+poursuite pure. Mesuré : 1,9 m d'écart maximal à l'axe de la rue pour une
+chaussée de 26 m, et un bombement de 23 m vers le centre sur la traversée de
+l'esplanade. Un
+nouveau foyer se rallume ailleurs 12 à 35 s plus tard, donc la place ne
+s'éteint jamais complètement. Le camion suit un champ de navigation dédié,
+calculé vers le feu au moment où il entre.
 
 **Les badauds** — la moitié de l'effectif du cortège — ne manifestent pas : ils
 viennent voir. Ils flânent sur l'esplanade, se placent à 26-48 m du cortège pour

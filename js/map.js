@@ -41,6 +41,7 @@ class ParisMap {
     this.trees = [];
     this.props = [];
     this.roofs = [];                  // courtyards, ridges, chimneys
+    this.fires = [];                  // poubelles qui brûlent sur la place
     this.monument = { x: 322, y: 350, r: 7.5 };
     this.basin = { x: 346, y: 338, w: 46, h: 24 };   // miroir d'eau
 
@@ -59,6 +60,7 @@ class ParisMap {
     }
     this.cost = this.fields[0];            // compatibilité : la cible principale
     this.fromPlaza = new Int32Array(this.cols * this.rows);
+    this.extraField = new Int32Array(this.cols * this.rows);   // trajets ponctuels
     this.buckets = [];
     this.computeField(this.fields[0], [[this.centre[0], this.centre[1]]]);
     this.computeField(this.fromPlaza, this.plazaSeeds());
@@ -357,6 +359,9 @@ class ParisMap {
         this.roofs.push({ kind: 'chimney', x, y, w: rr(2, 4), h: rr(2, 3.4) });
       }
     }
+    /* feux de poubelles dispersés sur l'esplanade, de tailles variées */
+    for (let i = 0; i < 8; i++) this.addFire();
+
     /* street furniture on the esplanade */
     this.props.push({ kind: 'metro', x: 268, y: 338, a: 0.3, label: 'RÉPUBLIQUE' });
     this.props.push({ kind: 'metro', x: 292, y: 404, a: -0.2, label: 'TEMPLE' });
@@ -576,6 +581,121 @@ class ParisMap {
       if (d < bd) { bd = d; best = s; }
     }
     return best.name;
+  }
+
+  /* ------------------------- feux de poubelles ------------------------ */
+  /* un foyer de plus, quelque part sur la place : du simple bac renversé
+     au gros tas qui flambe */
+  addFire() {
+    const m = this.monument;
+    for (let guard = 0; guard < 400; guard++) {
+      const x = rr(250, 560), y = rr(215, 480);
+      if (!this.onPlaza(x, y) || !this.walkable(x, y)) continue;
+      if (dist2(x, y, m.x, m.y) < 32 * 32) continue;
+      let clear = true;
+      for (const f of this.fires) if (dist2(f.x, f.y, x, y) < 42 * 42) { clear = false; break; }
+      if (!clear) continue;
+      /* distribution en carré : beaucoup de petits, quelques gros brasiers */
+      const t = RNG();
+      const r = 0.75 + t * t * 2.6;
+      const f = {
+        x, y, r, r0: r, seed: RNG() * TAU, rate: rr(4.5, 7.5),
+        plume: rr(0.7, 1.3), ash: r * rr(1.9, 2.7), dying: 0,
+      };
+      this.fires.push(f);
+      return f;
+    }
+    return null;
+  }
+
+  removeFire(f) {
+    const i = this.fires.indexOf(f);
+    if (i >= 0) this.fires.splice(i, 1);
+  }
+  /* répulsion douce : personne ne marche dans un foyer */
+  fireRepulse(x, y, out) {
+    out[0] = 0; out[1] = 0;
+    let k = 0;
+    for (const f of this.fires) {
+      const dx = x - f.x, dy = y - f.y;
+      const d2 = dx * dx + dy * dy;
+      const rad = f.r + 2.6;
+      if (d2 > rad * rad) continue;
+      const d = Math.sqrt(d2) || 0.001;
+      const w = 1 - d / rad;
+      out[0] += dx / d * w; out[1] += dy / d * w;
+      k = Math.max(k, w);
+    }
+    return k;
+  }
+
+  /* au sol : cendres, bac renversé, flammes */
+  drawFires(ctx, v, time) {
+    for (const f of this.fires) {
+      if (f.x < v.x0 - 20 || f.x > v.x1 + 20 || f.y < v.y0 - 20 || f.y > v.y1 + 20) continue;
+      const flick = 0.75 + 0.25 * Math.sin(time * f.rate + f.seed)
+        + 0.12 * Math.sin(time * f.rate * 2.7 + f.seed * 2);
+
+      /* traînée de cendres et halo chaud */
+      ctx.fillStyle = 'rgba(32,28,26,0.35)';
+      ctx.beginPath(); ctx.ellipse(f.x, f.y + 0.4, f.ash, f.ash * 0.75, 0, 0, TAU); ctx.fill();
+      const halo = ctx.createRadialGradient(f.x, f.y, 0, f.x, f.y, f.r * 7 * flick);
+      halo.addColorStop(0, 'rgba(255,150,60,0.38)');
+      halo.addColorStop(0.5, 'rgba(255,110,40,0.11)');
+      halo.addColorStop(1, 'rgba(255,90,30,0)');
+      ctx.fillStyle = halo;
+      ctx.beginPath(); ctx.arc(f.x, f.y, f.r * 7 * flick, 0, TAU); ctx.fill();
+
+      /* le bac renversé */
+      ctx.save();
+      ctx.translate(f.x, f.y); ctx.rotate(f.seed);
+      ctx.fillStyle = 'rgba(0,0,0,0.4)';
+      ctx.fillRect(-f.r * 0.9 + 0.3, -f.r * 0.7 + 0.3, f.r * 1.8, f.r * 1.4);
+      ctx.fillStyle = '#2f3338';
+      ctx.fillRect(-f.r * 0.9, -f.r * 0.7, f.r * 1.8, f.r * 1.4);
+      ctx.fillStyle = '#1b1d20';
+      ctx.fillRect(-f.r * 0.65, -f.r * 0.45, f.r * 1.3, f.r * 0.9);
+      ctx.restore();
+
+      /* flammes : trois couches qui vacillent */
+      const cols = ['rgba(214,70,24,0.85)', 'rgba(248,146,38,0.9)', 'rgba(255,224,130,0.95)'];
+      for (let i = 0; i < 3; i++) {
+        const ph = time * (f.rate + i * 1.7) + f.seed * (i + 1);
+        const h = f.r * (3.0 - i * 0.75) * flick;
+        const w = f.r * (1.15 - i * 0.26);
+        const lean = Math.sin(ph) * f.r * 0.3;
+        ctx.fillStyle = cols[i];
+        ctx.beginPath();
+        ctx.moveTo(f.x - w, f.y + f.r * 0.3);
+        ctx.quadraticCurveTo(f.x - w * 0.5 + lean, f.y - h * 0.6, f.x + lean * 0.6, f.y - h);
+        ctx.quadraticCurveTo(f.x + w * 0.5 + lean, f.y - h * 0.6, f.x + w, f.y + f.r * 0.3);
+        ctx.closePath(); ctx.fill();
+      }
+    }
+  }
+
+  /* au-dessus de la mêlée : le panache */
+  drawFireSmoke(ctx, v, time, wind) {
+    const wx = wind ? wind.x : 0.4, wy = wind ? wind.y : -0.2;
+    for (const f of this.fires) {
+      if (f.x < v.x0 - 60 || f.x > v.x1 + 60 || f.y < v.y0 - 60 || f.y > v.y1 + 60) continue;
+      const puffs = f.r > 2 ? 7 : 5;
+      for (let i = 0; i < puffs; i++) {
+        const t = ((time * 0.22 * f.plume + i / puffs + f.seed) % 1);
+        const age = t;
+        const px = f.x + wx * 26 * age + Math.sin(time * 0.8 + i + f.seed) * 2.4 * age;
+        const py = f.y + wy * 26 * age - 2 * age;
+        const pr = f.r * (1.4 + age * 9) * (f.r > 2 ? 1.15 : 1);
+        const a = 0.3 * (1 - age) * (age < 0.12 ? age / 0.12 : 1);
+        if (a <= 0.01) continue;
+        const grd = ctx.createRadialGradient(px, py, 0, px, py, pr);
+        grd.addColorStop(0, 'rgba(58,52,48,' + (a * 0.9).toFixed(3) + ')');
+        grd.addColorStop(0.6, 'rgba(78,72,66,' + (a * 0.45).toFixed(3) + ')');
+        grd.addColorStop(1, 'rgba(90,84,78,0)');
+        ctx.fillStyle = grd;
+        ctx.beginPath(); ctx.arc(px, py, pr, 0, TAU); ctx.fill();
+      }
+    }
   }
 
   /* street names, drawn in screen space by the HUD layer */
